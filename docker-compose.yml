@@ -1,0 +1,119 @@
+version: '3.8'
+
+services:
+  # FastAPI Application
+  app:
+    build: .
+    container_name: procurement_api
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+      - redis
+    environment:
+      - ENVIRONMENT=development
+      - DATABASE_URL=postgresql+asyncpg://postgres:password@db:5432/procurement_platform
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    volumes:
+      - ./logs:/app/logs
+      - ./uploads:/app/uploads
+    restart: unless-stopped
+    networks:
+      - procurement_network
+
+  # PostgreSQL Database
+  db:
+    image: postgres:15-alpine
+    container_name: procurement_db
+    environment:
+      - POSTGRES_DB=procurement_platform
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    networks:
+      - procurement_network
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: procurement_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    networks:
+      - procurement_network
+
+  # Celery Worker
+  worker:
+    build: .
+    container_name: procurement_worker
+    command: celery -A app.services.celery_app worker --loglevel=info
+    depends_on:
+      - db
+      - redis
+    environment:
+      - ENVIRONMENT=development
+      - DATABASE_URL=postgresql+asyncpg://postgres:password@db:5432/procurement_platform
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    volumes:
+      - ./logs:/app/logs
+      - ./uploads:/app/uploads
+    restart: unless-stopped
+    networks:
+      - procurement_network
+
+  # Celery Beat (Scheduler)
+  scheduler:
+    build: .
+    container_name: procurement_scheduler
+    command: celery -A app.services.celery_app beat --loglevel=info
+    depends_on:
+      - db
+      - redis
+    environment:
+      - ENVIRONMENT=development
+      - DATABASE_URL=postgresql+asyncpg://postgres:password@db:5432/procurement_platform
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    volumes:
+      - ./logs:/app/logs
+    restart: unless-stopped
+    networks:
+      - procurement_network
+
+  # Flower (Celery Monitoring)
+  flower:
+    build: .
+    container_name: procurement_flower
+    command: celery -A app.services.celery_app flower --port=5555
+    depends_on:
+      - redis
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    ports:
+      - "5555:5555"
+    restart: unless-stopped
+    networks:
+      - procurement_network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  procurement_network:
+    driver: bridge

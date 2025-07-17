@@ -1,0 +1,123 @@
+# FastAPI and ASGI server
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+gunicorn==21.2.0
+
+# Database
+sqlalchemy==2.0.23
+asyncpg==0.29.0
+alembic==1.13.1
+
+# Authentication and Security
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+python-multipart==0.0.6
+
+# Environment and Configuration
+python-dotenv==1.0.0
+pydantic==2.5.0
+pydantic-settings==2.1.0
+
+# Redis and Caching
+redis==5.0.1
+aioredis==2.0.1
+
+# Background Tasks
+celery==5.3.4
+
+# HTTP Client
+httpx==0.25.2
+aiohttp==3.9.1
+
+# Data Processing
+pandas==2.1.3
+numpy==1.26.2
+scipy==1.11.4
+scikit-learn==1.3.2
+
+# Logging and Monitoring
+structlog==23.2.0
+
+# Testing
+pytest==7.4.3
+pytest-asyncio==0.21.1
+pytest-mock==3.12.0
+httpx==0.25.2
+factory-boy==3.3.0
+
+# Development Tools
+black==23.11.0
+flake8==6.1.0
+mypy==1.7.1
+pre-commit==3.6.0
+
+# Documentation
+mkdocs==1.5.3
+mkdocs-material==9.4.8
+
+# Email
+fastapi-mail==1.4.1
+
+# File Upload
+python-multipart==0.0.6
+
+# Date/Time
+python-dateutil==2.8.2
+
+# Validation
+email-validator==2.1.0
+
+# JSON Web Tokens
+PyJWT==2.8.0
+
+# Password hashing
+bcrypt==4.1.2
+
+# UUID
+uuid==1.30
+
+# Web Scraping Dependencies
+beautifulsoup4==4.12.2
+lxml==4.9.3
+selenium==4.15.2
+playwright==1.40.0
+requests==2.31.0
+requests-html==0.10.0
+
+# Data Processing and Validation
+pydantic==2.5.0
+validators==0.22.0
+python-dateutil==2.8.2
+fuzzywuzzy==0.18.0
+python-levenshtein==0.23.0
+
+# Document Processing
+PyPDF2==3.0.1
+python-docx==1.1.0
+pdfplumber==0.9.0
+
+# Rate Limiting
+limits==3.7.0
+
+# Circuit Breaker
+pybreaker==1.0.1
+
+# Retry Logic
+tenacity==8.2.3
+
+# Text Processing
+nltk==3.8.1
+spacy==3.7.2
+unidecode==1.3.7
+
+# Monitoring and Metrics
+prometheus-client==0.19.0
+
+# Risk Detection and Analytics
+matplotlib==3.8.2
+seaborn==0.13.0
+plotly==5.17.0
+joblib==1.3.2
+
+# Statistical Analysis
+statsmodels==0.14.0
