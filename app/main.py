@@ -1,49 +1,41 @@
-from fastapi import FastAPI, HTTPException
+import os
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-import uvicorn
-import os
-
-# Import settings
-from app.core.config import settings
 
 # Create FastAPI app
 app = FastAPI(
-    title=settings.APP_NAME,
-    version=settings.VERSION,
-    description="Romanian Public Procurement Platform API",
-    docs_url="/docs",
-    redoc_url="/redoc",
+    title="Romanian Public Procurement Platform API",
+    version="1.0.0",
+    description="API for Romanian Public Procurement Platform",
 )
 
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # Health check endpoint
-@app.get("/health")
-async def health_check():
-    return {
-        "status": "healthy",
-        "app_name": settings.APP_NAME,
-        "version": settings.VERSION
-    }
-
-# Root endpoint
 @app.get("/")
 async def root():
     return {
         "message": "Romanian Public Procurement Platform API",
-        "version": settings.VERSION,
-        "docs_url": "/docs"
+        "status": "running",
+        "version": "1.0.0"
     }
 
-# Basic API endpoints
+@app.get("/health")
+async def health_check():
+    return {
+        "status": "healthy",
+        "service": "Romanian Public Procurement Platform API"
+    }
+
+# Dashboard metrics endpoint
 @app.get("/api/v1/dashboard/metrics")
 async def get_dashboard_metrics():
     return {
@@ -55,6 +47,7 @@ async def get_dashboard_metrics():
         "active_tenders": 45
     }
 
+# Visualization endpoints
 @app.get("/api/v1/visualizations/dashboard/metrics")
 async def get_visualization_metrics():
     return {
@@ -70,60 +63,34 @@ async def get_visualization_metrics():
 
 @app.get("/api/v1/charts/tender-volume")
 async def get_tender_volume():
-    return {
-        "data": [
-            {"month": "Ian", "count": 95, "value": 180000000},
-            {"month": "Feb", "count": 88, "value": 165000000},
-            {"month": "Mar", "count": 102, "value": 195000000},
-            {"month": "Apr", "count": 110, "value": 210000000},
-            {"month": "Mai", "count": 125, "value": 240000000}
-        ]
-    }
+    return [
+        {"month": "Ian", "count": 95, "value": 180000000},
+        {"month": "Feb", "count": 88, "value": 165000000},
+        {"month": "Mar", "count": 102, "value": 195000000},
+        {"month": "Apr", "count": 110, "value": 210000000},
+        {"month": "Mai", "count": 125, "value": 240000000}
+    ]
 
 @app.get("/api/v1/charts/geographic")
 async def get_geographic_data():
-    return {
-        "data": [
-            {"county": "Bucuresti", "count": 150, "total_value": 450000000},
-            {"county": "Cluj", "count": 85, "total_value": 180000000},
-            {"county": "Timis", "count": 72, "total_value": 160000000},
-            {"county": "Constanta", "count": 65, "total_value": 140000000},
-            {"county": "Iasi", "count": 58, "total_value": 125000000}
-        ]
-    }
+    return [
+        {"county": "Bucuresti", "count": 150, "total_value": 450000000},
+        {"county": "Cluj", "count": 85, "total_value": 180000000},
+        {"county": "Timis", "count": 72, "total_value": 160000000},
+        {"county": "Constanta", "count": 65, "total_value": 140000000},
+        {"county": "Iasi", "count": 58, "total_value": 125000000}
+    ]
 
 @app.get("/api/v1/charts/risk-distribution")
 async def get_risk_distribution():
-    return {
-        "data": [
-            {"risk_level": "low", "count": 750, "percentage": 60},
-            {"risk_level": "medium", "count": 312, "percentage": 25},
-            {"risk_level": "high", "count": 156, "percentage": 12.5},
-            {"risk_level": "critical", "count": 32, "percentage": 2.5}
-        ]
-    }
+    return [
+        {"risk_level": "low", "count": 750, "percentage": 60},
+        {"risk_level": "medium", "count": 312, "percentage": 25},
+        {"risk_level": "high", "count": 156, "percentage": 12.5},
+        {"risk_level": "critical", "count": 32, "percentage": 2.5}
+    ]
 
-# Error handlers
-@app.exception_handler(404)
-async def not_found_handler(request, exc):
-    return JSONResponse(
-        status_code=404,
-        content={"message": "Resource not found"}
-    )
-
-@app.exception_handler(500)
-async def internal_error_handler(request, exc):
-    return JSONResponse(
-        status_code=500,
-        content={"message": "Internal server error"}
-    )
-
-# Run the app
-if __name__ == "__main__":
-    port = int(os.getenv("PORT", 8000))
-    uvicorn.run(
-        "app.main:app",
-        host="0.0.0.0",
-        port=port,
-        reload=False
-    )
+# Test endpoint
+@app.get("/test")
+async def test_endpoint():
+    return {"message": "API is working!", "status": "success"}
