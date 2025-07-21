@@ -1,22 +1,23 @@
 """
-Security utilities for authentication
+Security utilities for authentication and authorization
 """
 
-import bcrypt
 import secrets
-from typing import Optional
-from fastapi import Depends, HTTPException, status
+from typing import Optional, List, Dict, Any
+from datetime import datetime, timedelta
+from passlib.context import CryptContext
+from fastapi import HTTPException, status, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from app.core.database import get_session
-from app.db.models import User, UserRole, Role
+from sqlalchemy.orm import Session
+from app.core.database import get_db
+from app.db.models import User, Role, UserRole
 from app.auth.jwt_handler import jwt_handler
-from app.core.logging import audit_logger
 
+# Password hashing context
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
+# OAuth2 scheme
 security = HTTPBearer()
-
 
 class PasswordManager:
     """Password hashing and verification"""
@@ -24,118 +25,149 @@ class PasswordManager:
     @staticmethod
     def hash_password(password: str) -> str:
         """Hash password using bcrypt"""
-        salt = bcrypt.gensalt()
-        return bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
+        return pwd_context.hash(password)
     
     @staticmethod
-    def verify_password(password: str, hashed_password: str) -> bool:
+    def verify_password(plain_password: str, hashed_password: str) -> bool:
         """Verify password against hash"""
-        return bcrypt.checkpw(password.encode('utf-8'), hashed_password.encode('utf-8'))
+        return pwd_context.verify(plain_password, hashed_password)
     
     @staticmethod
-    def generate_token(length: int = 32) -> str:
-        """Generate secure random token"""
-        return secrets.token_urlsafe(length)
-
+    def generate_password_reset_token() -> str:
+        """Generate secure password reset token"""
+        return secrets.token_urlsafe(32)
 
 class AuthService:
     """Authentication service"""
     
-    def __init__(self, db: AsyncSession):
+    def __init__(self, db: Session):
         self.db = db
     
-    async def authenticate_user(self, email: str, password: str) -> Optional[User]:
+    def authenticate_user(self, email: str, password: str) -> Optional[User]:
         """Authenticate user with email and password"""
-        # Get user by email
-        result = await self.db.execute(
-            select(User).where(User.email == email, User.is_active == True)
-        )
-        user = result.scalar_one_or_none()
+        user = self.db.query(User).filter(User.email == email).first()
         
-        if not user:
+        if not user or not user.is_active:
             return None
         
-        # Verify password
         if not PasswordManager.verify_password(password, user.hashed_password):
             return None
         
-        # Log successful authentication
-        audit_logger.log_auth_event(
-            "login_success",
-            str(user.id),
-            "unknown",  # IP will be added by middleware
-            True
-        )
+        # Update last login
+        user.last_login = datetime.utcnow()
+        user.login_count += 1
+        self.db.commit()
         
         return user
     
-    async def get_user_by_id(self, user_id: str) -> Optional[User]:
+    def get_user_by_id(self, user_id: str) -> Optional[User]:
         """Get user by ID"""
-        result = await self.db.execute(
-            select(User).where(User.id == user_id, User.is_active == True)
-        )
-        return result.scalar_one_or_none()
+        return self.db.query(User).filter(User.id == user_id).first()
     
-    async def get_user_by_email(self, email: str) -> Optional[User]:
+    def get_user_by_email(self, email: str) -> Optional[User]:
         """Get user by email"""
-        result = await self.db.execute(
-            select(User).where(User.email == email)
-        )
-        return result.scalar_one_or_none()
+        return self.db.query(User).filter(User.email == email).first()
     
-    async def get_user_roles(self, user_id: str) -> list[str]:
-        """Get user roles"""
-        result = await self.db.execute(
-            select(Role.name)
-            .join(UserRole)
-            .where(UserRole.user_id == user_id)
-        )
-        return [role for role in result.scalars()]
-    
-    async def get_user_permissions(self, user_id: str) -> list[str]:
-        """Get user permissions from roles"""
-        result = await self.db.execute(
-            select(Role.permissions)
-            .join(UserRole)
-            .where(UserRole.user_id == user_id)
+    def create_user(self, user_data: Dict[str, Any]) -> User:
+        """Create new user"""
+        # Check if user already exists
+        if self.get_user_by_email(user_data["email"]):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="User with this email already exists"
+            )
+        
+        # Hash password
+        hashed_password = PasswordManager.hash_password(user_data["password"])
+        
+        # Create user
+        user = User(
+            email=user_data["email"],
+            hashed_password=hashed_password,
+            first_name=user_data["first_name"],
+            last_name=user_data["last_name"],
+            is_active=True,
+            is_verified=False
         )
         
+        self.db.add(user)
+        self.db.commit()
+        self.db.refresh(user)
+        
+        return user
+    
+    def get_user_roles(self, user_id: str) -> List[str]:
+        """Get user roles"""
+        user_roles = self.db.query(UserRole).filter(UserRole.user_id == user_id).all()
+        roles = []
+        for user_role in user_roles:
+            role = self.db.query(Role).filter(Role.id == user_role.role_id).first()
+            if role:
+                roles.append(role.name)
+        return roles
+    
+    def get_user_permissions(self, user_id: str) -> List[str]:
+        """Get user permissions from roles"""
+        user_roles = self.db.query(UserRole).filter(UserRole.user_id == user_id).all()
         permissions = set()
-        for role_permissions in result.scalars():
-            if isinstance(role_permissions, list):
+        
+        for user_role in user_roles:
+            role = self.db.query(Role).filter(Role.id == user_role.role_id).first()
+            if role and role.permissions:
+                role_permissions = role.permissions.get("permissions", [])
                 permissions.update(role_permissions)
-            elif isinstance(role_permissions, dict):
-                permissions.update(role_permissions.get('permissions', []))
         
         return list(permissions)
 
+class PermissionChecker:
+    """Permission checking utilities"""
+    
+    def __init__(self, db: Session):
+        self.db = db
+        self.auth_service = AuthService(db)
+    
+    def has_permission(self, user_id: str, permission: str) -> bool:
+        """Check if user has specific permission"""
+        user_permissions = self.auth_service.get_user_permissions(user_id)
+        return permission in user_permissions or "*" in user_permissions
+    
+    def has_role(self, user_id: str, role: str) -> bool:
+        """Check if user has specific role"""
+        user_roles = self.auth_service.get_user_roles(user_id)
+        return role in user_roles
+    
+    def require_permission(self, user_id: str, permission: str):
+        """Require specific permission or raise exception"""
+        if not self.has_permission(user_id, permission):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Permission '{permission}' required"
+            )
 
-async def get_current_user(
+def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
-    db: AsyncSession = Depends(get_session)
+    db: Session = Depends(get_db)
 ) -> User:
     """Get current authenticated user"""
+    token = credentials.credentials
     
-    # Verify token
     try:
-        payload = jwt_handler.verify_token(credentials.credentials)
+        payload = jwt_handler.decode_token(token)
         user_id = payload.get("sub")
-        
         if not user_id:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid token payload"
             )
-        
-    except Exception as e:
+    except HTTPException:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Could not validate credentials"
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
         )
     
-    # Get user from database
     auth_service = AuthService(db)
-    user = await auth_service.get_user_by_id(user_id)
+    user = auth_service.get_user_by_id(user_id)
     
     if not user:
         raise HTTPException(
@@ -143,12 +175,15 @@ async def get_current_user(
             detail="User not found"
         )
     
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User is inactive"
+        )
+    
     return user
 
-
-async def get_current_active_user(
-    current_user: User = Depends(get_current_user)
-) -> User:
+def get_current_active_user(current_user: User = Depends(get_current_user)) -> User:
     """Get current active user"""
     if not current_user.is_active:
         raise HTTPException(
@@ -157,55 +192,30 @@ async def get_current_active_user(
         )
     return current_user
 
-
-class PermissionChecker:
-    """Permission checking utilities"""
-    
-    def __init__(self, required_permission: str):
-        self.required_permission = required_permission
-    
-    async def __call__(
-        self,
-        current_user: User = Depends(get_current_active_user),
-        db: AsyncSession = Depends(get_session)
-    ) -> User:
-        """Check if user has required permission"""
-        
-        auth_service = AuthService(db)
-        user_permissions = await auth_service.get_user_permissions(str(current_user.id))
-        
-        # Check for wildcard permission (super admin)
-        if "*" in user_permissions:
-            return current_user
-        
-        # Check for specific permission
-        if self.required_permission not in user_permissions:
-            audit_logger.log_auth_event(
-                "permission_denied",
-                str(current_user.id),
-                "unknown",
-                False,
-                required_permission=self.required_permission
-            )
-            
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Insufficient permissions"
-            )
-        
-        return current_user
-
-
 def require_permission(permission: str):
     """Decorator to require specific permission"""
-    return PermissionChecker(permission)
+    def permission_checker(
+        current_user: User = Depends(get_current_active_user),
+        db: Session = Depends(get_db)
+    ):
+        permission_checker = PermissionChecker(db)
+        permission_checker.require_permission(str(current_user.id), permission)
+        return current_user
+    
+    return permission_checker
 
-
-# Common permission dependencies
-require_view_tenders = require_permission("view_public_tenders")
-require_view_private_tenders = require_permission("view_private_tenders")
-require_advanced_search = require_permission("advanced_search")
-require_create_alerts = require_permission("create_alerts")
-require_api_access = require_permission("api_access")
-require_admin_access = require_permission("user_management")
-require_system_access = require_permission("system_monitoring")
+def require_role(role: str):
+    """Decorator to require specific role"""
+    def role_checker(
+        current_user: User = Depends(get_current_active_user),
+        db: Session = Depends(get_db)
+    ):
+        permission_checker = PermissionChecker(db)
+        if not permission_checker.has_role(str(current_user.id), role):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Role '{role}' required"
+            )
+        return current_user
+    
+    return role_checker

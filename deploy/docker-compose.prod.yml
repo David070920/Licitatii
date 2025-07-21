@@ -1,0 +1,124 @@
+# Production Docker Compose for VPS Deployment
+version: '3.8'
+
+services:
+  # FastAPI Application
+  api:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: romanian-procurement-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://procurement:${DB_PASSWORD}@db:5432/procurement_db
+      - SECRET_KEY=${SECRET_KEY}
+      - CORS_ORIGINS=["https://your-domain.com"]
+      - ACCESS_TOKEN_EXPIRE_MINUTES=30
+      - ALGORITHM=HS256
+      - DEBUG=false
+      - LOG_LEVEL=INFO
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - db
+      - redis
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - procurement-network
+
+  # PostgreSQL Database
+  db:
+    image: postgres:15-alpine
+    container_name: romanian-procurement-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=procurement_db
+      - POSTGRES_USER=procurement
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    ports:
+      - "5432:5432"
+    networks:
+      - procurement-network
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: romanian-procurement-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - procurement-network
+    command: redis-server --appendonly yes
+
+  # Nginx Reverse Proxy
+  nginx:
+    image: nginx:alpine
+    container_name: romanian-procurement-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+      - ./ssl:/etc/nginx/ssl
+      - ../frontend/dist:/usr/share/nginx/html
+    depends_on:
+      - api
+    networks:
+      - procurement-network
+
+  # Celery Worker (Optional for background tasks)
+  celery-worker:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: romanian-procurement-worker
+    restart: unless-stopped
+    command: celery -A app.services.celery_app worker --loglevel=info
+    environment:
+      - DATABASE_URL=postgresql://procurement:${DB_PASSWORD}@db:5432/procurement_db
+      - SECRET_KEY=${SECRET_KEY}
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - db
+      - redis
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - procurement-network
+
+  # Celery Beat (Optional for scheduled tasks)
+  celery-beat:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: romanian-procurement-beat
+    restart: unless-stopped
+    command: celery -A app.services.celery_app beat --loglevel=info
+    environment:
+      - DATABASE_URL=postgresql://procurement:${DB_PASSWORD}@db:5432/procurement_db
+      - SECRET_KEY=${SECRET_KEY}
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - db
+      - redis
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - procurement-network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  procurement-network:
+    driver: bridge

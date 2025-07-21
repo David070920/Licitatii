@@ -1,0 +1,38 @@
+{
+  "root": "dist/",
+  "clean_urls": true,
+  "https_only": true,
+  "error_page": "index.html",
+  "routes": {
+    "/**": "index.html"
+  },
+  "headers": {
+    "/": {
+      "Cache-Control": "no-cache, no-store, must-revalidate"
+    },
+    "/**": {
+      "Cache-Control": "max-age=31536000"
+    },
+    "/static/**": {
+      "Cache-Control": "max-age=31536000, immutable"
+    },
+    "/assets/**": {
+      "Cache-Control": "max-age=31536000, immutable"
+    },
+    "/*.js": {
+      "Cache-Control": "max-age=31536000, immutable"
+    },
+    "/*.css": {
+      "Cache-Control": "max-age=31536000, immutable"
+    },
+    "/*.woff": {
+      "Cache-Control": "max-age=31536000, immutable"
+    },
+    "/*.woff2": {
+      "Cache-Control": "max-age=31536000, immutable"
+    },
+    "/index.html": {
+      "Cache-Control": "no-cache, no-store, must-revalidate"
+    }
+  }
+}

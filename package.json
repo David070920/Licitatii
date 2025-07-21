@@ -1,0 +1,30 @@
+{
+  "name": "romanian-procurement-platform-frontend",
+  "version": "1.0.0",
+  "description": "Frontend deployment for Romanian Procurement Platform",
+  "main": "index.js",
+  "engines": {
+    "node": "18.x",
+    "npm": "9.x"
+  },
+  "scripts": {
+    "build": "cd frontend && npm ci && npm run build",
+    "heroku-postbuild": "npm run build",
+    "start": "echo 'This is a static site deployment. The app is served by Heroku static buildpack.'"
+  },
+  "keywords": [
+    "react",
+    "vite",
+    "heroku",
+    "static",
+    "frontend"
+  ],
+  "author": "Romanian Procurement Platform Team",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-repo/romanian-procurement-platform.git"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}

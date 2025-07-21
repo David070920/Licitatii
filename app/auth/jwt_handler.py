@@ -8,75 +8,87 @@ from typing import Optional, Dict, Any
 from fastapi import HTTPException, status
 from app.core.config import settings
 
-
 class JWTHandler:
-    """JWT token handler"""
+    """JWT token handler for authentication"""
     
     def __init__(self):
         self.secret_key = settings.SECRET_KEY
         self.algorithm = settings.ALGORITHM
         self.access_token_expire_minutes = settings.ACCESS_TOKEN_EXPIRE_MINUTES
-        self.refresh_token_expire_days = settings.REFRESH_TOKEN_EXPIRE_DAYS
     
-    def create_access_token(self, data: Dict[str, Any]) -> str:
-        """Create access token"""
+    def create_access_token(self, data: Dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:
+        """Create JWT access token"""
         to_encode = data.copy()
-        expire = datetime.utcnow() + timedelta(minutes=self.access_token_expire_minutes)
-        to_encode.update({"exp": expire, "type": "access"})
         
-        return jwt.encode(to_encode, self.secret_key, algorithm=self.algorithm)
+        if expires_delta:
+            expire = datetime.utcnow() + expires_delta
+        else:
+            expire = datetime.utcnow() + timedelta(minutes=self.access_token_expire_minutes)
+        
+        to_encode.update({"exp": expire, "iat": datetime.utcnow()})
+        
+        try:
+            encoded_jwt = jwt.encode(to_encode, self.secret_key, algorithm=self.algorithm)
+            return encoded_jwt
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Could not create access token: {str(e)}"
+            )
     
     def create_refresh_token(self, data: Dict[str, Any]) -> str:
-        """Create refresh token"""
+        """Create JWT refresh token"""
         to_encode = data.copy()
-        expire = datetime.utcnow() + timedelta(days=self.refresh_token_expire_days)
-        to_encode.update({"exp": expire, "type": "refresh"})
+        expire = datetime.utcnow() + timedelta(days=30)  # Refresh token expires in 30 days
+        to_encode.update({"exp": expire, "iat": datetime.utcnow(), "type": "refresh"})
         
-        return jwt.encode(to_encode, self.secret_key, algorithm=self.algorithm)
+        try:
+            encoded_jwt = jwt.encode(to_encode, self.secret_key, algorithm=self.algorithm)
+            return encoded_jwt
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Could not create refresh token: {str(e)}"
+            )
     
-    def verify_token(self, token: str, token_type: str = "access") -> Dict[str, Any]:
-        """Verify and decode token"""
+    def decode_token(self, token: str) -> Dict[str, Any]:
+        """Decode JWT token"""
         try:
             payload = jwt.decode(token, self.secret_key, algorithms=[self.algorithm])
-            
-            # Check token type
-            if payload.get("type") != token_type:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Invalid token type"
-                )
-            
             return payload
-            
         except jwt.ExpiredSignatureError:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Token has expired"
+                detail="Token has expired",
+                headers={"WWW-Authenticate": "Bearer"},
             )
         except jwt.InvalidTokenError:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token"
+                detail="Invalid token",
+                headers={"WWW-Authenticate": "Bearer"},
             )
     
-    def decode_token(self, token: str) -> Optional[Dict[str, Any]]:
-        """Decode token without verification (for debugging)"""
+    def verify_token(self, token: str) -> Optional[Dict[str, Any]]:
+        """Verify JWT token and return payload"""
+        try:
+            payload = self.decode_token(token)
+            
+            # Check if token is expired
+            exp = payload.get("exp")
+            if exp and datetime.utcnow() > datetime.fromtimestamp(exp):
+                return None
+            
+            return payload
+        except HTTPException:
+            return None
+    
+    def get_token_payload(self, token: str) -> Dict[str, Any]:
+        """Get token payload without verification (for debugging)"""
         try:
             return jwt.decode(token, options={"verify_signature": False})
         except Exception:
-            return None
-    
-    def create_token_pair(self, user_data: Dict[str, Any]) -> Dict[str, str]:
-        """Create access and refresh token pair"""
-        access_token = self.create_access_token(user_data)
-        refresh_token = self.create_refresh_token(user_data)
-        
-        return {
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "token_type": "bearer"
-        }
+            return {}
 
-
-# Global JWT handler instance
+# Create global instance
 jwt_handler = JWTHandler()

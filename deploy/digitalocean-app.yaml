@@ -1,0 +1,57 @@
+# DigitalOcean App Platform Configuration
+name: romanian-procurement-platform
+services:
+  - name: api
+    source_dir: /
+    github:
+      repo: your-username/romanian-procurement-platform
+      branch: main
+    run_command: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    environment_slug: python
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    http_port: 8000
+    routes:
+      - path: /
+    envs:
+      - key: DATABASE_URL
+        scope: RUN_AND_BUILD_TIME
+        type: SECRET
+      - key: SECRET_KEY
+        scope: RUN_AND_BUILD_TIME
+        type: SECRET
+      - key: CORS_ORIGINS
+        scope: RUN_AND_BUILD_TIME
+        value: '["https://your-frontend-domain.com"]'
+      - key: ACCESS_TOKEN_EXPIRE_MINUTES
+        scope: RUN_AND_BUILD_TIME
+        value: "30"
+      - key: ALGORITHM
+        scope: RUN_AND_BUILD_TIME
+        value: "HS256"
+      - key: DEBUG
+        scope: RUN_AND_BUILD_TIME
+        value: "false"
+      - key: LOG_LEVEL
+        scope: RUN_AND_BUILD_TIME
+        value: "INFO"
+    health_check:
+      http_path: /health
+      initial_delay_seconds: 10
+      period_seconds: 10
+      timeout_seconds: 5
+      success_threshold: 1
+      failure_threshold: 3
+
+databases:
+  - name: procurement-db
+    engine: PG
+    version: "15"
+    size: basic-xs
+    num_nodes: 1
+    
+# Optional: Add Redis for caching
+# - name: procurement-redis
+#   engine: REDIS
+#   version: "7"
+#   size: basic-xs

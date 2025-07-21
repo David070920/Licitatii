@@ -2,7 +2,7 @@
 
 A comprehensive platform for monitoring and analyzing Romanian public procurement data, serving both business intelligence and transparency needs.
 
-## Features
+## 🚀 Features
 
 - **Advanced Tender Search**: Powerful search and filtering capabilities
 - **Risk Analysis**: Automated detection of procurement risks and anomalies
@@ -12,7 +12,7 @@ A comprehensive platform for monitoring and analyzing Romanian public procuremen
 - **API Access**: RESTful API for programmatic access
 - **Multi-user Support**: Role-based access control for different user types
 
-## Architecture
+## 🏗️ Architecture
 
 - **Framework**: FastAPI with async support
 - **Database**: PostgreSQL with SQLAlchemy ORM
@@ -21,131 +21,192 @@ A comprehensive platform for monitoring and analyzing Romanian public procuremen
 - **Authentication**: JWT-based with role-based permissions
 - **Documentation**: Auto-generated OpenAPI/Swagger docs
 
-## Quick Start
+## 🛠️ Quick Start
 
 ### Prerequisites
 
 - Python 3.11+
-- Docker and Docker Compose
 - PostgreSQL 15+
-- Redis 7+
+- Redis 7+ (optional)
+- Git
 
-### Development Setup
+### Automated Setup
 
-1. Clone the repository:
+1. **Clone the repository**:
 ```bash
 git clone <repository-url>
 cd Licitatii
 ```
 
-2. Copy environment configuration:
-```bash
-cp .env.example .env
-```
-
-3. Update the `.env` file with your configuration
-
-4. Start services with Docker Compose:
-```bash
-docker-compose up -d
-```
-
-5. The API will be available at:
-   - API: http://localhost:8000
-   - Documentation: http://localhost:8000/api/v1/docs
-   - Celery Flower: http://localhost:5555
-
-### Local Development
-
-1. Create virtual environment:
+2. **Create virtual environment**:
 ```bash
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 ```
 
-2. Install dependencies:
+3. **Run setup script**:
 ```bash
-pip install -r requirements.txt
+python setup_dev.py
 ```
 
-3. Set up database:
+4. **Set up PostgreSQL database**:
 ```bash
-# Start PostgreSQL and Redis
-docker-compose up -d db redis
+# Create database and user
+createdb procurement_db
+createuser procurement -P  # Set password when prompted
 
-# Run database migrations
-python -m alembic upgrade head
+# Update DATABASE_URL in .env file
+DATABASE_URL=postgresql://procurement:yourpassword@localhost:5432/procurement_db
 ```
 
-4. Start the application:
+5. **Initialize database**:
+```bash
+python init_db.py
+```
+
+6. **Start the application**:
 ```bash
 uvicorn app.main:app --reload
 ```
 
-5. Start Celery worker (in another terminal):
+7. **Access the API**:
+   - API Documentation: http://localhost:8000/api/v1/docs
+   - ReDoc: http://localhost:8000/api/v1/redoc
+   - API Base: http://localhost:8000
+
+### Manual Setup
+
+1. **Install dependencies**:
 ```bash
-celery -A app.services.celery_app worker --loglevel=info
+pip install -r requirements.txt
 ```
 
-6. Start Celery beat (in another terminal):
+2. **Create environment file**:
 ```bash
-celery -A app.services.celery_app beat --loglevel=info
+cp .env.example .env
+# Edit .env with your configuration
 ```
 
-## API Documentation
+3. **Set up database**:
+```bash
+# Start PostgreSQL
+# Create database: procurement_db
+# Update DATABASE_URL in .env
 
-The API documentation is automatically generated and available at:
-- Swagger UI: http://localhost:8000/api/v1/docs
-- ReDoc: http://localhost:8000/api/v1/redoc
+# Run migrations
+alembic upgrade head
+```
+
+4. **Initialize with sample data**:
+```bash
+python init_db.py
+```
+
+## 📊 Default Credentials
+
+After running `python init_db.py`, you can use:
+- **Email**: admin@licitatii.ro
+- **Password**: admin123
+
+## 🔧 Configuration
+
+Key configuration options in `.env`:
+
+```env
+# Database
+DATABASE_URL=postgresql://user:password@localhost:5432/db
+
+# Security
+SECRET_KEY=your-secret-key-here
+ACCESS_TOKEN_EXPIRE_MINUTES=30
+
+# CORS
+CORS_ORIGINS=["http://localhost:3000", "http://localhost:8080"]
+
+# Application
+DEBUG=true
+LOG_LEVEL=INFO
+```
+
+## 📚 API Documentation
 
 ### Authentication
 
 Most endpoints require authentication. To authenticate:
 
-1. Register a new user:
+1. **Register a new user**:
 ```bash
 curl -X POST "http://localhost:8000/api/v1/auth/register" \
   -H "Content-Type: application/json" \
   -d '{
     "email": "user@example.com",
-    "password": "password123",
+    "password": "SecurePass123",
     "first_name": "John",
     "last_name": "Doe"
   }'
 ```
 
-2. Login to get access token:
+2. **Login to get access token**:
 ```bash
 curl -X POST "http://localhost:8000/api/v1/auth/login" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "username=user@example.com&password=password123"
+  -d "username=user@example.com&password=SecurePass123"
 ```
 
-3. Use the access token in subsequent requests:
+3. **Use the access token**:
 ```bash
-curl -X GET "http://localhost:8000/api/v1/tenders" \
+curl -X GET "http://localhost:8000/api/v1/auth/me" \
   -H "Authorization: Bearer <access_token>"
 ```
 
-## Testing
+### Key Endpoints
 
-Run the test suite:
+- `POST /api/v1/auth/register` - Register new user
+- `POST /api/v1/auth/login` - User login
+- `GET /api/v1/auth/me` - Get current user info
+- `GET /api/v1/tenders` - Search tenders
+- `GET /api/v1/dashboard/metrics` - Dashboard metrics
+- `GET /api/v1/visualizations/dashboard/metrics` - Visualization data
 
-```bash
-# Run all tests
-pytest
+## 🗄️ Database Schema
 
-# Run with coverage
-pytest --cov=app
+The platform uses a comprehensive database schema with:
 
-# Run specific test file
-pytest tests/test_auth.py
+- **Users & Authentication**: User management with role-based access
+- **Tenders**: Complete tender information with relationships
+- **Companies**: Bidding companies and contracting authorities
+- **Risk Analysis**: Risk scores and pattern detection
+- **Audit Logs**: Complete activity tracking
 
-# Run tests with verbose output
-pytest -v
-```
+## 🔍 Risk Detection
 
-## Project Structure
+The platform includes several risk detection algorithms:
+
+- **Single Bidder Detection**: Identifies tenders with only one bidder
+- **Price Anomaly Detection**: Detects unusual pricing patterns
+- **Frequent Winner Analysis**: Identifies patterns of repeated winners
+- **Geographic Clustering**: Detects geographic anomalies in procurement
+
+## 👥 User Types
+
+- **Anonymous Users**: View public tenders and statistics
+- **Registered Citizens**: Create alerts and save searches
+- **Business Users**: Advanced search, analytics, and reporting
+- **Journalists**: Investigation tools and bulk data access
+- **Administrators**: User management and system monitoring
+
+## 📊 Data Sources
+
+The platform ingests data from:
+
+- **SICAP (SEAP)**: Primary Romanian procurement system
+- **ANRMAP**: National regulatory authority data
+- **EU TED**: European tender database
+- **Local Municipalities**: Various municipal websites
+
+## 🚀 Development
+
+### Project Structure
 
 ```
 app/
@@ -161,60 +222,109 @@ app/
 ├── core/                   # Core application components
 │   ├── config.py           # Configuration management
 │   ├── database.py         # Database configuration
-│   ├── logging.py          # Logging configuration
-│   └── middleware.py       # Custom middleware
-├── db/                     # Database models and migrations
+│   └── ...
+├── db/                     # Database models
 │   └── models.py           # SQLAlchemy models
+├── schemas/                # Pydantic schemas
+│   ├── auth.py            # Authentication schemas
+│   ├── user.py            # User schemas
+│   └── ...
 └── services/               # Business logic services
-    └── celery_app.py       # Celery configuration
-
-tests/                      # Test suite
-├── conftest.py             # Test configuration
-└── test_*.py               # Test files
-
-docker-compose.yml          # Docker services configuration
-Dockerfile                  # Application container
-requirements.txt            # Python dependencies
-.env.example               # Environment variables template
+    └── ...
 ```
 
-## Configuration
+### Running Tests
 
-Key configuration options in `.env`:
+```bash
+# Run all tests
+pytest
 
-- `DATABASE_URL`: PostgreSQL connection string
-- `REDIS_HOST`: Redis server host
-- `SECRET_KEY`: JWT secret key (change in production)
-- `ALLOWED_HOSTS`: CORS allowed hosts
-- `LOG_LEVEL`: Logging level (DEBUG, INFO, WARNING, ERROR)
+# Run with coverage
+pytest --cov=app
 
-## Data Sources
+# Run specific test file
+pytest tests/test_auth.py
+```
 
-The platform ingests data from:
+### Code Quality
 
-- **SICAP (SEAP)**: Primary Romanian procurement system
-- **ANRMAP**: National regulatory authority data
-- **EU TED**: European tender database
-- **Local Municipalities**: Various municipal websites
+```bash
+# Format code
+black app/
 
-## Risk Detection
+# Lint code
+flake8 app/
 
-The platform includes several risk detection algorithms:
+# Type checking
+mypy app/
+```
 
-- **Single Bidder Detection**: Identifies tenders with only one bidder
-- **Price Anomaly Detection**: Detects unusual pricing patterns
-- **Frequent Winner Analysis**: Identifies patterns of repeated winners
-- **Geographic Clustering**: Detects geographic anomalies in procurement
+## 🐳 Docker Deployment
 
-## User Types
+### Using Docker Compose
 
-- **Anonymous Users**: View public tenders and statistics
-- **Registered Citizens**: Create alerts and save searches
-- **Business Users**: Advanced search, analytics, and reporting
-- **Journalists**: Investigation tools and bulk data access
-- **Administrators**: User management and system monitoring
+```bash
+# Start all services
+docker-compose up -d
 
-## Contributing
+# View logs
+docker-compose logs -f
+
+# Stop services
+docker-compose down
+```
+
+### Manual Docker Build
+
+```bash
+# Build image
+docker build -t romanian-procurement .
+
+# Run container
+docker run -p 8000:8000 romanian-procurement
+```
+
+## 🌐 Production Deployment
+
+### Railway Deployment
+
+1. **Install Railway CLI**:
+```bash
+npm install -g @railway/cli
+```
+
+2. **Deploy**:
+```bash
+railway login
+railway init
+railway up
+```
+
+3. **Add database**:
+```bash
+railway add postgresql
+```
+
+### Environment Variables
+
+Set these in your production environment:
+
+```env
+DATABASE_URL=postgresql://...
+SECRET_KEY=production-secret-key
+CORS_ORIGINS=["https://your-frontend.com"]
+```
+
+## 📈 Monitoring
+
+The platform includes:
+
+- **Health Checks**: `/health` endpoint
+- **Metrics**: Prometheus-compatible metrics
+- **Logging**: Structured logging with different levels
+- **Error Tracking**: Sentry integration support
+
+## 🤝 Contributing
 
 1. Fork the repository
 2. Create a feature branch
@@ -223,10 +333,30 @@ The platform includes several risk detection algorithms:
 5. Run the test suite
 6. Submit a pull request
 
-## License
+## 📄 License
 
 This project is licensed under the MIT License.
 
-## Support
+## 🆘 Support
 
-For support and questions, please contact the development team.
+For support and questions:
+- Check the API documentation at `/api/v1/docs`
+- Review the architecture documentation in the markdown files
+- Create an issue in the repository
+
+## 🔮 Roadmap
+
+- [ ] Advanced risk detection algorithms
+- [ ] Real-time data ingestion pipeline
+- [ ] Mobile application
+- [ ] Advanced analytics dashboard
+- [ ] Machine learning integration
+- [ ] Multi-language support
+- [ ] Advanced reporting system
+- [ ] API rate limiting and quotas
+- [ ] Advanced caching strategies
+- [ ] Comprehensive monitoring dashboard
+
+---
+
+**Romanian Public Procurement Platform** - Bringing transparency and efficiency to public procurement through advanced technology and data analysis.
