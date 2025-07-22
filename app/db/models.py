@@ -196,7 +196,7 @@ class TenderDocument(Base):
     mime_type = Column(String(100))
     upload_date = Column(DateTime(timezone=True), server_default=func.now())
     extracted_text = Column(Text)
-    metadata = Column(JSON, default={})
+    document_metadata = Column(JSON, default={})
     
     # Relationships
     tender = relationship("Tender", back_populates="documents")
@@ -391,7 +391,7 @@ class UserActivity(Base):
     response_time_ms = Column(Integer)
     
     # Metadata
-    metadata = Column(JSON, default={})
+    activity_metadata = Column(JSON, default={})
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
     # Relationships
@@ -447,5 +447,5 @@ class DataIngestionLog(Base):
     error_details = Column(JSON, default={})
     
     # Metadata
-    metadata = Column(JSON, default={})
+    job_metadata = Column(JSON, default={})
     created_at = Column(DateTime(timezone=True), server_default=func.now())
