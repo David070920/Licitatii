@@ -1,0 +1,400 @@
+name: Intelligent Data Synchronization
+
+on:
+  schedule:
+    # Staggered scheduling to optimize GitHub Actions minutes
+    - cron: '15 4 * * *'    # SICAP sync - 4:15 AM UTC (7:15 AM Bucharest)
+    - cron: '45 4 * * *'    # ANRMAP sync - 4:45 AM UTC (7:45 AM Bucharest)  
+    - cron: '15 12 * * *'   # Risk analysis - 12:15 PM UTC (3:15 PM Bucharest)
+    - cron: '0 20 * * 0'    # Weekly cleanup - Sunday 8 PM UTC
+  
+  workflow_dispatch:
+    inputs:
+      sync_type:
+        description: 'Type of synchronization'
+        required: true
+        default: 'incremental'
+        type: choice
+        options:
+        - full_sync
+        - incremental
+        - risk_analysis_only
+        - cleanup_only
+      
+      data_source:
+        description: 'Data source to sync'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+        - all
+        - sicap
+        - anrmap
+      
+      force_sync:
+        description: 'Force synchronization even if recent data exists'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  PYTHON_VERSION: '3.11'
+  MAX_EXECUTION_TIME: 25  # Stay under 30min GitHub Actions limit
+
+jobs:
+  check-sync-needed:
+    runs-on: ubuntu-latest
+    outputs:
+      sicap_needed: ${{ steps.check.outputs.sicap_needed }}
+      anrmap_needed: ${{ steps.check.outputs.anrmap_needed }}
+      risk_analysis_needed: ${{ steps.check.outputs.risk_analysis_needed }}
+      cleanup_needed: ${{ steps.check.outputs.cleanup_needed }}
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Install dependencies
+      run: |
+        pip install requests python-dateutil httpx
+    
+    - name: Check if sync is needed
+      id: check
+      env:
+        API_BASE_URL: ${{ vars.API_BASE_URL || 'https://api.procurement-platform.me' }}
+        API_TOKEN: ${{ secrets.API_TOKEN }}
+      run: |
+        python -c "
+        import os, sys, requests, json
+        from datetime import datetime, timedelta
+        
+        api_url = os.environ.get('API_BASE_URL', 'https://api.procurement-platform.me')
+        api_token = os.environ.get('API_TOKEN', '')
+        
+        headers = {'Authorization': f'Bearer {api_token}'} if api_token else {}
+        
+        try:
+            response = requests.get(f'{api_url}/api/v1/admin/sync-status', headers=headers, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+            else:
+                print(f'API returned {response.status_code}, defaulting to sync needed')
+                data = {}
+            
+            now = datetime.now()
+            sicap_last = datetime.fromisoformat(data.get('sicap_last_sync', '2020-01-01T00:00:00'))
+            anrmap_last = datetime.fromisoformat(data.get('anrmap_last_sync', '2020-01-01T00:00:00'))
+            risk_last = datetime.fromisoformat(data.get('risk_analysis_last', '2020-01-01T00:00:00'))
+            cleanup_last = datetime.fromisoformat(data.get('cleanup_last', '2020-01-01T00:00:00'))
+            
+            # Sync needed if more than threshold time has passed or force sync
+            force = '${{ github.event.inputs.force_sync }}' == 'true'
+            sync_type = '${{ github.event.inputs.sync_type }}' or 'incremental'
+            data_source = '${{ github.event.inputs.data_source }}' or 'all'
+            
+            # Time thresholds
+            sicap_needed = (
+                (now - sicap_last).total_seconds() > 21600 or  # 6 hours
+                force or 
+                sync_type == 'full_sync' or
+                data_source in ['all', 'sicap']
+            )
+            
+            anrmap_needed = (
+                (now - anrmap_last).total_seconds() > 21600 or  # 6 hours
+                force or
+                sync_type == 'full_sync' or
+                data_source in ['all', 'anrmap']
+            )
+            
+            risk_needed = (
+                (now - risk_last).total_seconds() > 43200 or  # 12 hours
+                force or
+                sync_type in ['full_sync', 'risk_analysis_only']
+            )
+            
+            cleanup_needed = (
+                (now - cleanup_last).total_seconds() > 604800 or  # 1 week
+                sync_type == 'cleanup_only'
+            )
+            
+            # Override based on manual inputs
+            if sync_type == 'risk_analysis_only':
+                sicap_needed = False
+                anrmap_needed = False
+                risk_needed = True
+            elif sync_type == 'cleanup_only':
+                sicap_needed = False
+                anrmap_needed = False
+                risk_needed = False
+                cleanup_needed = True
+            
+            print(f'SICAP needed: {sicap_needed}')
+            print(f'ANRMAP needed: {anrmap_needed}')
+            print(f'Risk analysis needed: {risk_needed}')
+            print(f'Cleanup needed: {cleanup_needed}')
+            
+            with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                f.write(f'sicap_needed={str(sicap_needed).lower()}\n')
+                f.write(f'anrmap_needed={str(anrmap_needed).lower()}\n')
+                f.write(f'risk_analysis_needed={str(risk_needed).lower()}\n')
+                f.write(f'cleanup_needed={str(cleanup_needed).lower()}\n')
+            
+        except Exception as e:
+            print(f'Error checking sync status: {e}')
+            # Default to sync needed on error for safety
+            with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                f.write('sicap_needed=true\n')
+                f.write('anrmap_needed=true\n')
+                f.write('risk_analysis_needed=true\n')
+                f.write('cleanup_needed=false\n')
+        "
+
+  sicap-data-sync:
+    needs: check-sync-needed
+    if: needs.check-sync-needed.outputs.sicap_needed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Python with caching
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: 'pip'
+        cache-dependency-path: 'requirements.txt'
+    
+    - name: Install optimized dependencies
+      run: |
+        pip install requests beautifulsoup4 httpx asyncpg sqlalchemy python-dateutil pydantic
+    
+    - name: SICAP Data Ingestion
+      timeout-minutes: 15
+      env:
+        DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        API_BASE_URL: ${{ vars.API_BASE_URL || 'https://api.procurement-platform.me' }}
+        API_TOKEN: ${{ secrets.API_TOKEN }}
+        SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        SYNC_TYPE: ${{ github.event.inputs.sync_type || 'incremental' }}
+      run: |
+        python scripts/github_actions/sicap_sync.py
+    
+    - name: Update sync status
+      if: always()
+      env:
+        API_BASE_URL: ${{ vars.API_BASE_URL || 'https://api.procurement-platform.me' }}
+        API_TOKEN: ${{ secrets.API_TOKEN }}
+      run: |
+        status="${{ job.status }}"
+        timestamp=$(date -Iseconds)
+        
+        curl -X POST "$API_BASE_URL/api/v1/admin/update-sync-status" \
+          -H "Authorization: Bearer $API_TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"source\": \"sicap\", \"status\": \"$status\", \"timestamp\": \"$timestamp\"}" \
+          --max-time 10 || echo "Failed to update sync status"
+
+  anrmap-data-sync:
+    needs: check-sync-needed
+    if: needs.check-sync-needed.outputs.anrmap_needed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Python with caching
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: 'pip'
+        cache-dependency-path: 'requirements.txt'
+    
+    - name: Install optimized dependencies
+      run: |
+        pip install requests beautifulsoup4 httpx asyncpg sqlalchemy python-dateutil pydantic
+    
+    - name: ANRMAP Data Ingestion
+      timeout-minutes: 15
+      env:
+        DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        API_BASE_URL: ${{ vars.API_BASE_URL || 'https://api.procurement-platform.me' }}
+        API_TOKEN: ${{ secrets.API_TOKEN }}
+        SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        SYNC_TYPE: ${{ github.event.inputs.sync_type || 'incremental' }}
+      run: |
+        python scripts/github_actions/anrmap_sync.py
+    
+    - name: Update sync status
+      if: always()
+      env:
+        API_BASE_URL: ${{ vars.API_BASE_URL || 'https://api.procurement-platform.me' }}
+        API_TOKEN: ${{ secrets.API_TOKEN }}
+      run: |
+        status="${{ job.status }}"
+        timestamp=$(date -Iseconds)
+        
+        curl -X POST "$API_BASE_URL/api/v1/admin/update-sync-status" \
+          -H "Authorization: Bearer $API_TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"source\": \"anrmap\", \"status\": \"$status\", \"timestamp\": \"$timestamp\"}" \
+          --max-time 10 || echo "Failed to update sync status"
+
+  risk-analysis:
+    needs: [check-sync-needed, sicap-data-sync, anrmap-data-sync]
+    if: always() && needs.check-sync-needed.outputs.risk_analysis_needed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Python with caching
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: 'pip'
+    
+    - name: Install ML dependencies
+      run: |
+        pip install numpy pandas scikit-learn scipy asyncpg sqlalchemy python-dateutil
+    
+    - name: Run Risk Analysis
+      timeout-minutes: 20
+      env:
+        DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        API_BASE_URL: ${{ vars.API_BASE_URL || 'https://api.procurement-platform.me' }}
+        API_TOKEN: ${{ secrets.API_TOKEN }}
+        SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+      run: |
+        python scripts/github_actions/risk_analysis.py
+    
+    - name: Generate Risk Reports
+      env:
+        DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        API_BASE_URL: ${{ vars.API_BASE_URL || 'https://api.procurement-platform.me' }}
+        API_TOKEN: ${{ secrets.API_TOKEN }}
+      run: |
+        python scripts/github_actions/generate_reports.py
+    
+    - name: Update sync status
+      if: always()
+      env:
+        API_BASE_URL: ${{ vars.API_BASE_URL || 'https://api.procurement-platform.me' }}
+        API_TOKEN: ${{ secrets.API_TOKEN }}
+      run: |
+        status="${{ job.status }}"
+        timestamp=$(date -Iseconds)
+        
+        curl -X POST "$API_BASE_URL/api/v1/admin/update-sync-status" \
+          -H "Authorization: Bearer $API_TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"source\": \"risk_analysis\", \"status\": \"$status\", \"timestamp\": \"$timestamp\"}" \
+          --max-time 10 || echo "Failed to update sync status"
+
+  cleanup-maintenance:
+    needs: check-sync-needed
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: needs.check-sync-needed.outputs.cleanup_needed == 'true'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Install dependencies
+      run: |
+        pip install asyncpg sqlalchemy python-dateutil
+    
+    - name: Database Cleanup
+      env:
+        DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        API_TOKEN: ${{ secrets.API_TOKEN }}
+      run: |
+        python scripts/github_actions/database_cleanup.py
+    
+    - name: Generate Storage Report
+      env:
+        DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+        API_BASE_URL: ${{ vars.API_BASE_URL || 'https://api.procurement-platform.me' }}
+      run: |
+        python scripts/github_actions/storage_monitor.py
+
+  notify-completion:
+    needs: [sicap-data-sync, anrmap-data-sync, risk-analysis, cleanup-maintenance]
+    if: always()
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Send Slack Notification
+      env:
+        SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+      run: |
+        # Determine overall status
+        sicap_status="${{ needs.sicap-data-sync.result }}"
+        anrmap_status="${{ needs.anrmap-data-sync.result }}"
+        risk_status="${{ needs.risk-analysis.result }}"
+        cleanup_status="${{ needs.cleanup-maintenance.result }}"
+        
+        # Count successes and failures
+        success_count=0
+        total_count=0
+        
+        for status in "$sicap_status" "$anrmap_status" "$risk_status" "$cleanup_status"; do
+          if [[ "$status" == "success" ]]; then
+            ((success_count++))
+            ((total_count++))
+          elif [[ "$status" == "failure" ]]; then
+            ((total_count++))
+          elif [[ "$status" == "skipped" ]]; then
+            # Don't count skipped jobs
+            continue
+          fi
+        done
+        
+        if [[ $total_count -eq 0 ]]; then
+          overall_status="No jobs ran"
+          emoji="ℹ️"
+        elif [[ $success_count -eq $total_count ]]; then
+          overall_status="All jobs successful"
+          emoji="✅"
+        elif [[ $success_count -gt 0 ]]; then
+          overall_status="Partial success ($success_count/$total_count)"
+          emoji="⚠️"
+        else
+          overall_status="All jobs failed"
+          emoji="❌"
+        fi
+        
+        # Send notification
+        curl -X POST -H 'Content-type: application/json' \
+          --data "{
+            \"text\": \"$emoji Romanian Procurement Platform - Data Sync Report\",
+            \"attachments\": [
+              {
+                \"color\": \"$([ $success_count -eq $total_count ] && echo good || echo warning)\",
+                \"title\": \"Data Synchronization Complete\",
+                \"text\": \"$overall_status\",
+                \"fields\": [
+                  {\"title\": \"SICAP Sync\", \"value\": \"$sicap_status\", \"short\": true},
+                  {\"title\": \"ANRMAP Sync\", \"value\": \"$anrmap_status\", \"short\": true},
+                  {\"title\": \"Risk Analysis\", \"value\": \"$risk_status\", \"short\": true},
+                  {\"title\": \"Cleanup\", \"value\": \"$cleanup_status\", \"short\": true},
+                  {\"title\": \"Trigger\", \"value\": \"${{ github.event_name }}\", \"short\": true},
+                  {\"title\": \"Time\", \"value\": \"$(date -u +%Y-%m-%d\ %H:%M\ UTC)\", \"short\": true}
+                ]
+              }
+            ]
+          }" \
+          $SLACK_WEBHOOK || echo "Failed to send Slack notification"

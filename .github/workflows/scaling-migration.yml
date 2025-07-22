@@ -1,0 +1,465 @@
+name: Scaling Migration Assistant
+
+on:
+  workflow_dispatch:
+    inputs:
+      migration_type:
+        description: 'Type of migration to perform'
+        required: true
+        type: choice
+        options:
+        - analyze_only
+        - migrate_to_tier1
+        - migrate_to_tier2
+        - rollback_migration
+        - emergency_scale
+      
+      force_migration:
+        description: 'Force migration without usage analysis'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  analyze-scaling-needs:
+    runs-on: ubuntu-latest
+    outputs:
+      needs_upgrade: ${{ steps.analysis.outputs.needs_upgrade }}
+      recommended_tier: ${{ steps.analysis.outputs.recommended_tier }}
+      estimated_cost: ${{ steps.analysis.outputs.estimated_cost }}
+      urgency_level: ${{ steps.analysis.outputs.urgency_level }}
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Install dependencies
+      run: |
+        pip install asyncpg requests python-dateutil
+    
+    - name: Run Scaling Analysis
+      id: analysis
+      env:
+        DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        API_BASE_URL: ${{ vars.API_BASE_URL || 'https://api.procurement-platform.me' }}
+        API_TOKEN: ${{ secrets.API_TOKEN }}
+      run: |
+        python -c "
+        import os, asyncio, asyncpg, requests, json
+        from datetime import datetime, timedelta
+        
+        async def analyze_database_usage():
+            conn = await asyncpg.connect(os.environ['DATABASE_URL'])
+            try:
+                # Get database size
+                size_result = await conn.fetchrow('SELECT pg_database_size(current_database()) as size_bytes')
+                size_bytes = size_result['size_bytes']
+                size_mb = size_bytes / (1024 * 1024)
+                size_gb = size_bytes / (1024 * 1024 * 1024)
+                
+                # Get growth data
+                growth_query = '''
+                    SELECT 
+                        date_trunc('day', created_at) as day,
+                        count(*) as records_added
+                    FROM tenders 
+                    WHERE created_at > NOW() - INTERVAL '7 days'
+                    GROUP BY date_trunc('day', created_at)
+                    ORDER BY day
+                '''
+                growth_data = await conn.fetch(growth_query)
+                
+                # Calculate daily growth
+                if len(growth_data) > 1:
+                    daily_growth = sum(row['records_added'] for row in growth_data) / len(growth_data)
+                    total_records = await conn.fetchval('SELECT count(*) FROM tenders')
+                    bytes_per_record = size_bytes / max(total_records, 1)
+                    daily_growth_mb = (daily_growth * bytes_per_record) / (1024 * 1024)
+                else:
+                    daily_growth_mb = 0
+                
+                return {
+                    'size_mb': round(size_mb, 2),
+                    'size_gb': round(size_gb, 3),
+                    'utilization_percent': round((size_gb / 1.0) * 100, 1),  # % of 1GB
+                    'daily_growth_mb': round(daily_growth_mb, 2),
+                    'needs_upgrade': size_mb > 800  # 800MB threshold
+                }
+            finally:
+                await conn.close()
+        
+        def analyze_api_performance():
+            api_url = os.environ.get('API_BASE_URL')
+            api_token = os.environ.get('API_TOKEN', '')
+            headers = {'Authorization': f'Bearer {api_token}'} if api_token else {}
+            
+            try:
+                response = requests.get(f'{api_url}/api/v1/admin/performance-stats', 
+                                     headers=headers, timeout=10)
+                if response.status_code == 200:
+                    data = response.json()
+                    return {
+                        'daily_requests': data.get('requests_24h', 0),
+                        'avg_response_time': data.get('avg_response_time', 0),
+                        'error_rate': data.get('error_rate', 0),
+                        'needs_upgrade': (
+                            data.get('requests_24h', 0) > 8000 or
+                            data.get('avg_response_time', 0) > 2.5 or
+                            data.get('error_rate', 0) > 3.0
+                        )
+                    }
+            except:
+                pass
+            
+            return {
+                'daily_requests': 0,
+                'avg_response_time': 0,
+                'error_rate': 0,
+                'needs_upgrade': False
+            }
+        
+        def determine_recommendations(db_analysis, api_analysis):
+            recommendations = []
+            estimated_cost = 0
+            urgency = 'low'
+            
+            # Database recommendations
+            if db_analysis['needs_upgrade']:
+                if db_analysis['utilization_percent'] > 95:
+                    urgency = 'critical'
+                    recommendations.append('URGENT: Database at capacity - immediate upgrade required')
+                elif db_analysis['utilization_percent'] > 85:
+                    urgency = 'high'
+                    recommendations.append('Database approaching limit - upgrade within 1 week')
+                else:
+                    urgency = 'medium'
+                    recommendations.append('Database upgrade recommended')
+                estimated_cost += 20  # Railway Pro
+            
+            # API recommendations
+            if api_analysis['needs_upgrade']:
+                if api_analysis['daily_requests'] > 15000:
+                    urgency = max(urgency, 'high')
+                    recommendations.append('High traffic detected - performance upgrade needed')
+                elif api_analysis['avg_response_time'] > 3.0:
+                    urgency = max(urgency, 'medium')
+                    recommendations.append('Slow API responses - consider scaling')
+                
+                if estimated_cost == 0:  # If not already upgrading for database
+                    estimated_cost += 20  # Railway Pro for API
+            
+            # Determine target tier
+            if estimated_cost >= 40:
+                target_tier = 'tier2'
+            elif estimated_cost >= 20:
+                target_tier = 'tier1'
+            else:
+                target_tier = 'current'
+            
+            return recommendations, estimated_cost, urgency, target_tier
+        
+        # Run analysis
+        db_analysis = asyncio.run(analyze_database_usage())
+        api_analysis = analyze_api_performance()
+        recommendations, cost, urgency, tier = determine_recommendations(db_analysis, api_analysis)
+        
+        needs_upgrade = db_analysis['needs_upgrade'] or api_analysis['needs_upgrade']
+        
+        # Generate report
+        report = {
+            'timestamp': datetime.now().isoformat(),
+            'database': db_analysis,
+            'api': api_analysis,
+            'recommendations': recommendations,
+            'estimated_monthly_cost': cost,
+            'urgency': urgency,
+            'target_tier': tier,
+            'needs_upgrade': needs_upgrade
+        }
+        
+        print('SCALING ANALYSIS REPORT')
+        print('=' * 50)
+        print(f'Database Size: {db_analysis[\"size_mb\"]} MB ({db_analysis[\"utilization_percent\"]}% of limit)')
+        print(f'Daily Growth: {db_analysis[\"daily_growth_mb\"]} MB/day')
+        print(f'API Requests: {api_analysis[\"daily_requests\"]:,}/day')
+        print(f'Avg Response: {api_analysis[\"avg_response_time\"]}s')
+        print(f'Error Rate: {api_analysis[\"error_rate\"]}%')
+        print(f'')
+        print(f'RECOMMENDATIONS:')
+        for i, rec in enumerate(recommendations, 1):
+            print(f'  {i}. {rec}')
+        print(f'')
+        print(f'Estimated Cost: ${cost}/month')
+        print(f'Urgency: {urgency.upper()}')
+        print(f'Target Tier: {tier}')
+        
+        # Set GitHub outputs
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+            f.write(f'needs_upgrade={str(needs_upgrade).lower()}\n')
+            f.write(f'recommended_tier={tier}\n')
+            f.write(f'estimated_cost={cost}\n')
+            f.write(f'urgency_level={urgency}\n')
+        
+        # Save full report
+        with open('scaling_analysis.json', 'w') as f:
+            json.dump(report, f, indent=2)
+        "
+    
+    - name: Upload Analysis Report
+      uses: actions/upload-artifact@v3
+      with:
+        name: scaling-analysis-report
+        path: scaling_analysis.json
+        retention-days: 30
+    
+    - name: Send Analysis Report
+      env:
+        SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+      run: |
+        urgency="${{ steps.analysis.outputs.urgency_level }}"
+        cost="${{ steps.analysis.outputs.estimated_cost }}"
+        tier="${{ steps.analysis.outputs.recommended_tier }}"
+        
+        # Set emoji and color based on urgency
+        case $urgency in
+          "critical") emoji="🔥"; color="danger" ;;
+          "high") emoji="⚠️"; color="warning" ;;
+          "medium") emoji="📊"; color="warning" ;;
+          *) emoji="✅"; color="good" ;;
+        esac
+        
+        curl -X POST -H 'Content-type: application/json' \
+          --data "{
+            \"text\": \"$emoji Scaling Analysis Complete - Romanian Procurement Platform\",
+            \"attachments\": [
+              {
+                \"color\": \"$color\",
+                \"title\": \"Scaling Recommendation\",
+                \"fields\": [
+                  {\"title\": \"Needs Upgrade\", \"value\": \"${{ steps.analysis.outputs.needs_upgrade }}\", \"short\": true},
+                  {\"title\": \"Recommended Tier\", \"value\": \"$tier\", \"short\": true},
+                  {\"title\": \"Estimated Cost\", \"value\": \"\$${cost}/month\", \"short\": true},
+                  {\"title\": \"Urgency\", \"value\": \"$urgency\", \"short\": true},
+                  {\"title\": \"Analysis Time\", \"value\": \"$(date -u '+%Y-%m-%d %H:%M UTC')\", \"short\": true}
+                ]
+              }
+            ]
+          }" \
+          $SLACK_WEBHOOK || echo "Failed to send Slack notification"
+
+  migrate-to-tier1:
+    needs: analyze-scaling-needs
+    if: |
+      github.event.inputs.migration_type == 'migrate_to_tier1' && 
+      (needs.analyze-scaling-needs.outputs.needs_upgrade == 'true' || github.event.inputs.force_migration == 'true')
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Backup Current Configuration
+      run: |
+        mkdir -p migration_backup
+        cp railway.toml migration_backup/railway.toml.backup
+        cp app/core/config.py migration_backup/config.py.backup
+        echo "$(date): Starting Tier 1 migration" > migration_backup/migration.log
+    
+    - name: Update Railway Configuration for Pro Tier
+      run: |
+        cat > railway.toml << 'EOF'
+        [build]
+        builder = "NIXPACKS"
+        
+        [deploy]
+        startCommand = "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 2"
+        restartPolicyType = "ON_FAILURE"
+        restartPolicyMaxRetries = 5
+        
+        [environments.production]
+        variables = { ENVIRONMENT = "production", WORKER_PROCESSES = "2" }
+        
+        [environments.development] 
+        variables = { ENVIRONMENT = "development", WORKER_PROCESSES = "1" }
+        EOF
+    
+    - name: Update Database Configuration
+      run: |
+        # Update database settings for larger instance
+        sed -i 's/pool_size": 3/pool_size": 10/' app/core/database.py || true
+        sed -i 's/max_overflow": 2/max_overflow": 5/' app/core/database.py || true
+    
+    - name: Deploy Updated Configuration
+      env:
+        RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      run: |
+        npm install -g @railway/cli
+        railway login --token $RAILWAY_TOKEN
+        
+        echo "Deploying Tier 1 configuration..."
+        railway up --detach
+        
+        echo "Waiting for deployment to complete..."
+        sleep 120
+    
+    - name: Verify Migration Success
+      env:
+        API_BASE_URL: ${{ vars.API_BASE_URL || 'https://api.procurement-platform.me' }}
+      run: |
+        echo "Verifying migration..."
+        
+        # Health check
+        if curl -f "$API_BASE_URL/health" --max-time 30; then
+          echo "✅ Health check passed"
+        else
+          echo "❌ Health check failed"
+          exit 1
+        fi
+        
+        # Database check
+        if curl -f "$API_BASE_URL/health/db" --max-time 30; then
+          echo "✅ Database connectivity verified"
+        else
+          echo "❌ Database check failed"
+          exit 1
+        fi
+        
+        echo "✅ Tier 1 migration completed successfully"
+    
+    - name: Upload Migration Backup
+      uses: actions/upload-artifact@v3
+      with:
+        name: tier1-migration-backup
+        path: migration_backup/
+        retention-days: 30
+    
+    - name: Notify Migration Success
+      env:
+        SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+      run: |
+        curl -X POST -H 'Content-type: application/json' \
+          --data "{
+            \"text\": \"✅ Migration to Tier 1 Complete\",
+            \"attachments\": [
+              {
+                \"color\": \"good\",
+                \"title\": \"Railway Pro Upgrade Successful\",
+                \"text\": \"Romanian Procurement Platform has been upgraded to Railway Pro tier.\",
+                \"fields\": [
+                  {\"title\": \"New Features\", \"value\": \"• 8GB Database Storage\\n• 2 Worker Processes\\n• Enhanced Performance\", \"short\": false},
+                  {\"title\": \"Monthly Cost\", \"value\": \"$20/month\", \"short\": true},
+                  {\"title\": \"Migration Time\", \"value\": \"$(date -u '+%Y-%m-%d %H:%M UTC')\", \"short\": true}
+                ]
+              }
+            ]
+          }" \
+          $SLACK_WEBHOOK || echo "Failed to send notification"
+    
+    - name: Notify Migration Failure
+      if: failure()
+      env:
+        SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+      run: |
+        curl -X POST -H 'Content-type: application/json' \
+          --data "{
+            \"text\": \"❌ Migration to Tier 1 Failed\",
+            \"attachments\": [
+              {
+                \"color\": \"danger\",
+                \"title\": \"Migration Failure Alert\",
+                \"text\": \"The upgrade to Railway Pro tier has failed. Manual intervention required.\",
+                \"fields\": [
+                  {\"title\": \"Action Required\", \"value\": \"1. Check Railway dashboard\\n2. Review migration logs\\n3. Consider rollback if needed\", \"short\": false},
+                  {\"title\": \"Backup Available\", \"value\": \"Configuration backup available in GitHub Actions artifacts\", \"short\": false}
+                ]
+              }
+            ]
+          }" \
+          $SLACK_WEBHOOK || echo "Failed to send notification"
+
+  rollback-migration:
+    if: github.event.inputs.migration_type == 'rollback_migration'
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Download Migration Backup
+      uses: actions/download-artifact@v3
+      with:
+        name: tier1-migration-backup
+        path: migration_backup/
+      continue-on-error: true
+    
+    - name: Restore Original Configuration
+      run: |
+        if [ -f migration_backup/railway.toml.backup ]; then
+          cp migration_backup/railway.toml.backup railway.toml
+          echo "✅ Restored railway.toml from backup"
+        else
+          echo "⚠️ No backup found, using default configuration"
+          cat > railway.toml << 'EOF'
+        [build]
+        builder = "NIXPACKS"
+        
+        [deploy]
+        startCommand = "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+        restartPolicyType = "ON_FAILURE"
+        EOF
+        fi
+        
+        if [ -f migration_backup/config.py.backup ]; then
+          cp migration_backup/config.py.backup app/core/config.py
+          echo "✅ Restored config.py from backup"
+        fi
+    
+    - name: Deploy Rollback
+      env:
+        RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      run: |
+        npm install -g @railway/cli
+        railway login --token $RAILWAY_TOKEN
+        
+        echo "Rolling back configuration..."
+        railway up --detach
+        
+        echo "Waiting for rollback to complete..."
+        sleep 90
+    
+    - name: Verify Rollback
+      env:
+        API_BASE_URL: ${{ vars.API_BASE_URL || 'https://api.procurement-platform.me' }}
+      run: |
+        if curl -f "$API_BASE_URL/health" --max-time 30; then
+          echo "✅ Rollback successful - system operational"
+        else
+          echo "❌ Rollback verification failed"
+          exit 1
+        fi
+    
+    - name: Notify Rollback Complete
+      env:
+        SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+      run: |
+        curl -X POST -H 'Content-type: application/json' \
+          --data "{
+            \"text\": \"🔄 Migration Rollback Complete\",
+            \"attachments\": [
+              {
+                \"color\": \"warning\",
+                \"title\": \"System Restored to Previous Configuration\", 
+                \"text\": \"Romanian Procurement Platform has been rolled back to the previous tier.\",
+                \"fields\": [
+                  {\"title\": \"Status\", \"value\": \"Rollback successful - system operational\", \"short\": false},
+                  {\"title\": \"Rollback Time\", \"value\": \"$(date -u '+%Y-%m-%d %H:%M UTC')\", \"short\": true}
+                ]
+              }
+            ]
+          }" \
+          $SLACK_WEBHOOK || echo "Failed to send notification"
