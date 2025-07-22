@@ -5,7 +5,8 @@ Database models based on the schema design
 import uuid
 from datetime import datetime
 from typing import List, Optional
-from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, Decimal, ForeignKey, JSON
+from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, ForeignKey, JSON
+from sqlalchemy.types import Numeric as Decimal
 from sqlalchemy.dialects.postgresql import UUID, ARRAY
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
